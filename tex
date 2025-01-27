@@ -1,0 +1,968 @@
+#include "proj1.h"
+
+typedef enum {PLAINTXT, COMMENT} Comm_State;
+typedef enum {PLAIN, MACRO_NAME, DEF, UNDEF, IF, IFDEF, EXPANDAFTER, INCLUDE, USERDEF, ERROR} State;
+
+
+char *user_name = NULL;
+
+typedef struct str{
+    char *arr;
+    int size;
+    int capacity;
+}str;
+
+
+typedef struct nd{
+    char *name;
+    char *value;
+    struct nd *next;
+}node;
+
+
+typedef struct lst{
+    node *head;
+}linked_lst;
+
+
+void resize(str *text);
+void pop(str *text);
+void push(str *text, char chr);
+void free_str(str *text);
+str *create_str();
+void reverse(char *text);
+void add_str_to_str(str *text, const char *input, int start_index);
+
+char *search_value(linked_lst *list, const char *name);
+void remove_node(linked_lst *lst, char *name);
+void append(linked_lst *lst, char *name, char *value);
+void destroy_node(node *nd);
+bool search_node(linked_lst *lst, char *name);
+linked_lst *create_lst();
+void skip_comment(str *output, FILE *file);
+int process_state_machine(str *words, str *output, linked_lst *lst, State *state);
+char *read_arg(int *start, char *input, int flag);
+char* replace_placeholder(const char* s, const char* t);
+char *read_file_to_array(const char *file_path);
+void free_linked_list(linked_lst *list);
+
+
+int main(int argc, char **argv) {
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s <file1> [<file2> ...]\n", argv[0]);
+        return 1;
+    }
+
+    str *words = create_str();
+    str *output = create_str();
+    
+    if (!words) {
+        fprintf(stderr, "Failed to create str object.\n");
+        return 1;
+    }
+
+    // Read and append content from each file into `words`
+    for (int i = 1; i < argc; i++) {
+        FILE *file = fopen(argv[i], "r");
+        if (!file) {
+            fprintf(stderr, "Error: Could not open file %s\n", argv[i]);
+            continue; // Skip to the next file
+        }
+
+        skip_comment(words, file); // Read and uncomment content
+        fclose(file); 
+    }
+
+    linked_lst *lst = create_lst();
+    if (!lst) {
+        fprintf(stderr, "Failed to create linked list.\n");
+        free_str(words);
+        return 1;
+    }
+
+    State state = PLAIN;
+    reverse(words->arr);
+
+
+    if (process_state_machine(words, output, lst, &state) != 0) {
+        fprintf(stderr, "State machine processing failed.\n");
+        free(words->arr);
+        free(words);
+
+        return 1;
+    }
+    else{
+        free_str(words);
+        printf("%s", output->arr);
+    }
+
+    free_linked_list(lst);
+    free_str(output);
+
+
+
+    return 0;
+}
+
+
+int process_state_machine(str *words, str *output, linked_lst *lst, State *state){
+
+    char *user_name = "";
+
+    int backslash_count = 0;   // To track consecutive backslashes
+    int i = words->size - 1;
+
+    while (i >= 0) {
+
+        char ch = words->arr[i];  // Access the current character
+        
+        switch (*state) {
+            case PLAIN:
+                words->size = i + 1;
+
+                if (ch == '\\') {
+                    if (backslash_count % 2 == 1) {
+                        // Odd backslashes mean the current backslash escapes itself
+                        push(output, ch);
+                    }
+                    backslash_count++; // Increment backslash count
+                } else {
+                    if (backslash_count % 2 == 1) {
+                        // Odd backslashes: handle escaped characters
+                        if (ch == '\\' || ch == '#' || ch == '%' || ch == '{' || ch == '}') {
+                            push(output, ch); // Push escaped character
+                        } else if (!isalnum(ch)) {
+                            push(output, '\\');
+                            push(output, ch); // Non-alphanumeric, treat as escaped
+                        } else {
+                            // Alphanumeric character, consider it part of a macro
+                            i++;
+                            *state = MACRO_NAME;
+                            backslash_count = 0; // Reset backslash count
+                            break;
+                        }
+                        backslash_count = 0; // Reset after handling escape
+                    } else {
+                        // Even backslashes: plain character
+                        push(output, ch);
+                    }
+                }
+                break;
+
+
+            case MACRO_NAME: {
+                words->size = i + 1;
+
+                int start = i;
+
+                while (start >= 0 && (isalnum(words->arr[start]) || words->arr[start] == '{')) {
+                    if (words->arr[start] == '{') {
+                        int length = i - start;  // length of the macro name
+
+                        char *name = malloc(sizeof(char) * (length + 1));
+                        if (!name) {
+                            fprintf(stderr, "Memory allocation failed for macro name.\n");
+                            exit(EXIT_FAILURE);
+                        }
+
+                        strncpy(name, &words->arr[start + 1], length);
+                        name[length] = '\0';
+                        reverse(name);
+
+                        i = start;  // Move i to the start
+
+                        if (strcmp(name, "def") == 0) {
+                            i++;
+                            *state = DEF;
+                            free(name);
+                            break;
+                        } else if (strcmp(name, "undef") == 0) {
+                            i++;
+                            *state = UNDEF;
+                            free(name);
+                            break;
+                        } else if (strcmp(name, "if") == 0) {
+                            i++;
+                            *state = IF;
+                            free(name);
+                            break;
+                        } else if (strcmp(name, "ifdef") == 0) {
+                            i++;
+                            *state = IFDEF;
+                            free(name);
+                            break;
+                        } 
+                        else if (strcmp(name, "expandafter") == 0) {
+                            i++;
+                            *state = EXPANDAFTER;
+                            free(name);
+                            break;
+                        }
+                        else if (strcmp(name, "include") == 0) {
+                            i++;
+                            *state = INCLUDE;
+                            free(name);
+                            break;
+                        }
+                        else {
+                            
+                            user_name = malloc(strlen(name)); 
+                            if (user_name == NULL) {
+                                fprintf(stderr, "Memory allocation failed.\n");
+                                return 1;  
+                            }
+                            strcpy(user_name, name);  
+
+                            i++;
+                            *state = USERDEF;
+                            free(name);
+                            break;
+                        }
+
+                        // Free name if not a built-in macro
+                        free(name);
+                        break;
+                    }
+                    start--;
+                }
+
+                
+
+                if (start < 0 || words->arr[start] != '{') {
+                    fprintf(stderr, "Error: Expected '{' after macro name.\n");
+                    exit(EXIT_FAILURE);
+                }
+                break;
+            }
+
+            case DEF:{
+                words->size = i + 1;
+                char *arg1 = read_arg(&i, words->arr, 0);
+                char *arg2 = read_arg(&i, words->arr, 1);
+                words->size = i + 1;
+
+                // printf("%s\n", arg1);
+
+
+                if(arg1 == NULL || arg2 == NULL || strcmp(arg1, "") == 0) {
+                    fprintf(stderr, "Error: Argument is NULL in DEF state. Terminating.\n");
+                    exit(EXIT_FAILURE);
+                }
+
+                if (search_node(lst, arg1)) {
+                    free(arg1);
+                    free(arg2);
+                    fprintf(stderr, "Cannot redefine macro\n");
+                    exit(EXIT_FAILURE);
+                } 
+                else {
+                    append(lst, arg1, arg2);
+                    free(arg1);
+                    free(arg2);
+                }
+                
+                i++;
+                *state = PLAIN;
+                break;
+            }
+
+            case UNDEF: {
+                words->size = i + 1;
+                char *name = read_arg(&i, words->arr, 0);
+                words->size = i + 1;
+
+                if (name == NULL){
+                    fprintf(stderr, "Error: Argument is NULL in UNDEF state. Terminating.\n");
+                    exit(EXIT_FAILURE);
+                }
+
+                
+                if (!search_node(lst, name)) {
+                    fprintf(stderr, "Macro '%s' not defined\n", name);
+                    exit(EXIT_FAILURE);
+                }
+                else {
+                    remove_node(lst, name);
+                }
+                free(name);
+                i++;
+                *state = PLAIN;
+                break;
+            }
+
+            case IF: {
+                words->size = i + 1;
+                char *arg1 = read_arg(&i, words->arr, 1); 
+                char *arg2 = read_arg(&i, words->arr, 1); 
+                char *arg3 = read_arg(&i, words->arr, 1); 
+
+                words->size = i + 1;
+
+                if (strcmp(arg1, "") == 0) {
+                    reverse(arg3);
+                    add_str_to_str(words, arg3, words->size);
+                    i = words->size - 1;
+                } else{
+                    reverse(arg2);
+                    add_str_to_str(words, arg2, words->size);
+                    i = words->size - 1;
+                }
+
+                free(arg1);
+                free(arg2);
+                free(arg3);
+                i++;
+                *state = PLAIN;
+                break;
+            }
+
+            case IFDEF:{
+                words->size = i + 1;
+
+                char *arg1 = read_arg(&i, words->arr, 0);
+                char *arg2 = read_arg(&i, words->arr, 1);
+                char *arg3 = read_arg(&i, words->arr, 1);
+
+                if (arg1 == NULL || strcmp(arg1, "") == 0){
+                        fprintf(stderr, "Error: Argument is NULL in IFDEF state. Terminating.\n");
+                        exit(EXIT_FAILURE);
+                }
+
+                words->size = i + 1;
+
+                if (search_node(lst, arg1)){
+                    reverse(arg2);
+                    add_str_to_str(words, arg2, words->size); 
+                    i = words->size-1;
+                }
+                
+                else if((arg1 == NULL) || (strcmp(arg1, "") == 0)){
+                    exit(EXIT_FAILURE);
+
+                }
+
+                else {
+                    reverse(arg3);
+                    add_str_to_str(words, arg3, words->size); // ELSE part
+                    i = words->size-1;
+                }
+
+                free(arg1);
+                free(arg2);
+                free(arg3);
+                i++;
+                *state = PLAIN;
+                break;
+            }
+
+           case EXPANDAFTER: {
+
+            State state2 = PLAIN;
+            words->size = i + 1;
+
+            // Read BEFORE and AFTER arguments
+            char *before = read_arg(&i, words->arr, 1);
+            char *after = read_arg(&i, words->arr, 1);
+
+            words->size = i + 1;
+
+            if (before == NULL || after == NULL) {
+                fprintf(stderr, "Error: Failed to read arguments in EXPANDAFTER.\n");
+                free(before);
+                free(after);
+                exit(EXIT_FAILURE);
+
+            }
+
+            // Create buffers
+            str *bef_proc_after = create_str();
+            str *ap_after = create_str();
+
+            if (!bef_proc_after || !ap_after) {
+                fprintf(stderr, "Error: Memory allocation failed for temporary buffers.\n");
+                free(before);
+                free(after);
+                free_str(bef_proc_after);
+                free_str(ap_after);
+                exit(EXIT_FAILURE);
+
+            }
+
+            
+            reverse(after);
+            
+            add_str_to_str(bef_proc_after, after, 0);
+
+
+            // Process AFTER first
+            if (process_state_machine(bef_proc_after, ap_after, lst, &state2) != 0) {
+                fprintf(stderr, "Error: Failed to process AFTER in EXPANDAFTER.\n");
+                free(before);
+                free(after);
+                free_str(bef_proc_after);
+                free_str(ap_after);
+                exit(EXIT_FAILURE);
+            }
+            reverse(ap_after->arr);
+            reverse(before);
+
+            add_str_to_str(ap_after, before, ap_after->size);
+            add_str_to_str(words, ap_after->arr, words->size);
+
+            // Cleanup
+            free(before);
+            free(after);
+            free_str(bef_proc_after);
+            free_str(ap_after);
+
+            i = words->size - 1;
+            i++;
+            *state = PLAIN;
+            break;
+        }
+
+            case INCLUDE: {
+                words->size = i + 1;
+
+                // Read the path argument
+                char *path = read_arg(&i, words->arr, 1);
+                if (path == NULL) {
+                    fprintf(stderr, "Error: Failed to read path argument in INCLUDE.\n");
+                    exit(EXIT_FAILURE);
+                }
+
+                words->size = i + 1;
+
+                // Read the file contents
+                char *new_input = read_file_to_array(path);
+                if (new_input == NULL) {
+                    fprintf(stderr, "Error: Failed to include file '%s'.\n", path);
+                    free(path);
+                    exit(EXIT_FAILURE);
+
+                }
+
+                reverse(new_input);
+                add_str_to_str(words, new_input, words->size);
+                i = words->size - 1;
+
+                free(new_input);
+                free(path);
+
+                i++;
+                *state = PLAIN;
+                break;
+            }
+
+
+            case USERDEF:{
+                words->size = i + 1;
+
+                char *arg1 = read_arg(&i, words->arr, 1);
+
+                if (arg1 == NULL){
+                        fprintf(stderr, "Error: Argument is NULL in USERDEF state. Terminating.\n");
+                        exit(EXIT_FAILURE);
+                    }
+
+                words->size = i + 1;
+
+                if (search_node(lst, user_name)) {
+                    char *value = search_value(lst, user_name);
+
+                    if (value == NULL) {
+                        fprintf(stderr, "Error: No value found for macro '%s'.\n", user_name);
+                        free(arg1); // Free arg1 before returning or breaking
+                        free(user_name);
+                        exit(EXIT_FAILURE);
+                    }
+
+                    char *replaced = replace_placeholder(value, arg1);
+
+                    if (replaced == NULL) {
+                        fprintf(stderr, "Error: Memory allocation failed during placeholder replacement.\n");
+                        free(arg1); // Free arg1 before returning or breaking
+                        free(user_name);                    
+                        exit(EXIT_FAILURE);
+                    }
+
+                    reverse(replaced);
+                    add_str_to_str(words, replaced, words->size);
+
+                    i = words->size - 1;
+                    free(replaced); 
+                }
+                else{
+                    fprintf(stderr, "Macro '%s' not defined\n", user_name);
+                    free(arg1); // Free arg1 if macro is not defined
+                    free(user_name);
+                    exit(EXIT_FAILURE);
+                }
+
+                free(arg1); // Free arg1 in all cases
+                free(user_name);
+                i++;
+                *state = PLAIN;
+                break;
+            }
+
+            case ERROR:{
+                fprintf(stderr, "stopped in Error state\n");
+                exit(EXIT_FAILURE);
+            }
+        } 
+        i--;
+
+    } 
+
+    return 0; 
+}
+
+char *read_arg(int *start, char *input, int flag) {
+    int brace_counter = 0; // Tracks the brace balance
+    int index = *start;    // Start reading from this position
+    int buf_index = 0;     // Index for the result buffer
+    char *buffer = malloc(1024); // Allocate memory for the result
+
+    if (!buffer) {
+        fprintf(stderr, "Memory allocation failed.\n");
+        return NULL;
+    }
+
+    // Check if the first character is '{'
+    if (input[index] != '{') {
+        free(buffer);
+        return NULL; // Invalid input, missing opening brace
+    }
+
+    brace_counter++; // Account for the initial '{'
+    index--; // Move past the opening brace
+
+    // Special case for empty argument "{}"
+    if (input[index] == '}') {
+        brace_counter--; // Balance the brace
+        *start = index - 1; // Move past the closing brace
+        free(buffer);
+        return strdup(""); // Return empty string for an empty argument
+    }
+
+    // Iterate through the input string
+    while (brace_counter > 0 && input[index] != '\0') {
+        char ch = input[index];
+
+        if (ch == '\\') { // Handle escaped characters
+            if (flag == 0) {
+                // Invalid if escaping is attempted with flag == 0
+                free(buffer);
+                return NULL;
+            }
+
+            // Handle escaped braces
+            if (input[index - 1] == '{' || input[index - 1] == '}') {
+                buffer[buf_index++] = input[index - 1]; // Add escaped brace
+                index--; // Skip the escaped character
+            } else {
+                buffer[buf_index++] = ch; // Add backslash itself
+            }
+        } else if (ch == '{') { // Unescaped opening brace
+            brace_counter++;
+            buffer[buf_index++] = ch;
+        } else if (ch == '}') { // Unescaped closing brace
+            brace_counter--;
+            if (brace_counter > 0) { // Only add if not the final closing brace
+                buffer[buf_index++] = ch;
+            }
+        } else if (isspace(ch)) { // Whitespace check
+            if (flag == 0) { // Only allow whitespace if flag is 1
+                free(buffer);
+                return NULL; // Invalid input
+            } else {
+                buffer[buf_index++] = ch; // Add whitespace if flag == 1
+            }
+        } else if (flag == 0 && !isalnum(ch)) { // Validate non-alphanumeric characters
+            free(buffer);
+            return NULL; // Invalid character
+        } else {
+            buffer[buf_index++] = ch; // Add valid character
+        }
+
+        index--; // Move to the next character
+    }
+
+    if (brace_counter != 0) { // Brace imbalance
+        free(buffer);
+        return NULL;
+    }
+
+    buffer[buf_index] = '\0'; // Null-terminate the result
+    *start = index;           // Update `start` to point to the next character
+    return buffer;
+}
+
+
+
+
+void skip_comment(str *output, FILE *file) { 
+    int ch;
+    Comm_State state = PLAINTXT;
+    int backslash_count = 0;
+
+    while ((ch = fgetc(file)) != EOF) {
+        switch (state) {
+            case PLAINTXT:
+                if (ch == '\\') {
+                    backslash_count++;
+                    push(output, ch); // Push backslash
+                } else if (ch == '%') {
+                    if (backslash_count % 2 == 0) {
+                        state = COMMENT; // Unescaped %, start comment
+                        backslash_count = 0; // Reset backslash count
+                    } else {
+                        push(output, ch); // Escaped %, treat as plain text
+                        backslash_count = 0; // Reset backslash count
+                    }
+                } else {
+                    push(output, ch); // Push all other characters as plain text
+                    backslash_count = 0; // Reset backslash count
+                }
+                break;
+
+            case COMMENT:
+                if (ch == '\n') {
+                    state = PLAINTXT; // Exit comment state
+                    backslash_count = 0; // Reset backslash count
+                    // Skip leading whitespace on the next line
+                    while ((ch = fgetc(file)) != EOF && (ch == ' ' || ch == '\t'))
+                        ; // Consume whitespace
+                    if (ch != EOF) {
+                        ungetc(ch, file); // Put back the first non-whitespace character
+                    }
+                }
+                break;
+        }
+    }
+}
+
+
+
+char* replace_placeholder(const char* s, const char* t) {
+    size_t s_len = 0, t_len = 0;
+
+    // Calculate lengths of `s` and `t`
+    while (s[s_len] != '\0') s_len++;
+    while (t[t_len] != '\0') t_len++;
+
+    // Allocate memory for the result
+    size_t result_len = s_len + (t_len - 1) + 1; // Approximation
+    char* result = (char*)malloc(result_len);
+    if (!result) {
+        return NULL; // Return NULL if memory allocation fails
+    }
+
+    const char* src = s; // Pointer for traversing input
+    char* dest = result; // Pointer for writing output
+
+    while (*src) {
+        if (*src == '#') {
+            // Count preceding backslashes
+            size_t backslash_count = 0;
+            const char* temp = src - 1;
+            while (temp >= s && *temp == '\\') {
+                backslash_count++;
+                temp--;
+            }
+
+            if (backslash_count % 2 == 0) {
+                // Replace `#` with `t` if even backslashes
+                const char* t_src = t;
+                while (*t_src) {
+                    *dest++ = *t_src++;
+                }
+                src++; // Skip the `#`
+            } else {
+                // Keep `#` as is if odd backslashes
+                *dest++ = *src++;
+            }
+        } else {
+            // Copy all other characters, including backslashes
+            *dest++ = *src++;
+        }
+    }
+
+    *dest = '\0'; // Null-terminate the result
+    return result;
+}
+
+
+void resize(str *text) {
+    if (text == NULL || text->arr == NULL) {
+        fprintf(stderr, "Error: NULL pointer passed to resize.\n");
+        return;
+    }
+
+    int new_capacity = text->capacity > 0 ? text->capacity * 2 : 1;
+    char *new_arr = realloc(text->arr, new_capacity);
+    if (new_arr == NULL) {
+        fprintf(stderr, "Failed to realloc memory.\n");
+        exit(EXIT_FAILURE); // Exit on allocation failure
+    }
+
+    text->arr = new_arr;
+    text->capacity = new_capacity;
+}
+
+
+void pop(str *text) {
+    if (text == NULL || text->size <= 0) {
+        return; 
+    }
+    text->arr[text->size - 1] = '\0'; 
+    text->size--; 
+}
+
+
+void push(str *text, char chr) {
+    if (text == NULL || text->arr == NULL) {
+        fprintf(stderr, "Error: NULL pointer passed to push.\n");
+        return;
+    }
+
+    // Check if resizing is needed
+    if (text->size >= text->capacity) {
+        resize(text);
+        if (text->arr == NULL) {
+            fprintf(stderr, "Failed to allocate memory in push.\n");
+            return;
+        }
+    }
+
+    // Add the character and null-terminate
+    text->arr[text->size++] = chr;
+    text->arr[text->size] = '\0';
+}
+
+
+void free_str(str *text){
+    free(text->arr);
+    free(text);
+}
+
+
+linked_lst *create_lst() {
+    linked_lst *lst = malloc(sizeof(linked_lst));
+    if (!lst) {
+        perror("Failed to allocate memory for the linked list");
+        exit(EXIT_FAILURE);
+    }
+    lst->head = NULL; 
+    return lst;
+}
+
+
+str *create_str() {
+    int initial_capacity = 150; // Use a slightly larger initial capacity
+    str *text = malloc(sizeof(str));
+    if (text == NULL) {
+        fprintf(stderr, "Failed to allocate memory for str structure.\n");
+        return NULL;
+    }
+
+    text->arr = malloc(sizeof(char) * initial_capacity);
+    if (text->arr == NULL) {
+        fprintf(stderr, "Failed to allocate memory for str array.\n");
+        free(text);
+        return NULL;
+    }
+
+    text->size = 0;
+    text->capacity = initial_capacity;
+    text->arr[0] = '\0'; // Null-terminate the array
+
+    return text;
+}
+
+
+void add_str_to_str(str *text, const char *input, int start_index) {
+    if (text == NULL || input == NULL) {
+        fprintf(stderr, "Invalid input: NULL pointer.\n");
+        return;
+    }
+
+    if (start_index < 0) {
+        fprintf(stderr, "Invalid start_index: must be >= 0.\n");
+        return;
+    }
+
+    int input_len = strlen(input);
+    int needed_size = start_index + input_len;
+
+    while (text->capacity <= needed_size) {
+        resize(text);
+        if (text->arr == NULL) {
+            fprintf(stderr, "Memory allocation failed in resize.\n");
+            return;
+        }
+    }
+
+    if (start_index > text->size) {
+        memset(text->arr + text->size, '\0', start_index - text->size);
+    }
+
+    memcpy(text->arr + start_index, input, input_len);
+    text->arr[needed_size] = '\0';
+
+    text->size = needed_size;
+}
+
+
+void reverse(char *text){
+    if (text == NULL) {
+        return; 
+    }
+    int start = 0;
+    int end = strlen(text) - 1;
+
+    while (start < end) {
+        char temp = text[start];
+        text[start] = text[end];
+        text[end] = temp;
+
+        start++;
+        end--;
+    }
+}
+
+char *search_value(linked_lst *list, const char *name){
+    node *current = list->head;  
+    while (current != NULL) {
+        if (strcmp(current->name, name) == 0) {
+            return current->value;  
+        }
+        current = current->next;  
+    }
+
+    return NULL;
+}
+
+
+void remove_node(linked_lst *lst, char *name){
+    if (lst == NULL || lst->head == NULL) {
+        return; 
+    }
+
+    if (strcmp(name, lst->head->name) == 0) {
+        node *curr = lst->head; 
+        lst->head = lst->head->next; 
+        destroy_node(curr); 
+        return; 
+    }
+    node *prev = lst->head;
+    node *curr = lst->head->next;
+    while (curr != NULL) {
+        if (strcmp(name, curr->name) == 0) {
+            prev->next = curr->next; 
+            destroy_node(curr); 
+            return; 
+        }
+        prev = curr;
+        curr = curr->next;
+    }
+}
+
+void append(linked_lst *lst, char *name, char *value){
+    if (lst == NULL){
+        return;
+    }
+    node *new_node = malloc(sizeof(node));
+    if (new_node == NULL){
+        fprintf(stderr, "Failed to allocate memory for new node.\n");
+        return;
+    }
+    new_node->name = malloc(strlen(name) + 1);
+    new_node->value = malloc(strlen(value) + 1);
+    if (new_node->name == NULL || new_node->value == NULL){
+        fprintf(stderr, "Failed to allocate memory for name.\n");
+        free(new_node->name); // Free name if allocated
+        free(new_node->value); // Free value if allocated
+        free(new_node);        // Free the node itself
+        return;
+    }
+    strcpy(new_node->name, name);
+    strcpy(new_node->value, value); 
+    new_node->next = lst->head;
+    lst->head = new_node; 
+}
+
+void destroy_node(node *nd){
+    free(nd->name);
+    free(nd);
+}
+
+bool search_node(linked_lst *lst, char *name){
+    if (lst == NULL || lst->head == NULL) {
+        return false; 
+    }
+
+    node *curr = lst->head;
+    while (curr != NULL) {
+        if (strcmp(curr->name, name) == 0){
+            return true; 
+        }
+        curr = curr->next; 
+    }
+    return false; 
+}
+
+char *read_file_to_array(const char *file_path){
+    FILE *file = fopen(file_path, "r");
+    if (!file) {
+        fprintf(stderr, "Error: Could not open file '%s'.\n", file_path);
+        exit(EXIT_FAILURE); // Exit the program with failure status
+    }
+
+    fseek(file, 0, SEEK_END);
+    long file_size = ftell(file);
+    rewind(file);
+
+    if (file_size <= 0) {
+        fprintf(stderr, "Error: File '%s' is empty or invalid.\n", file_path);
+        fclose(file);
+        exit(EXIT_FAILURE); // Exit the program with failure status
+    }
+
+    char *buffer = malloc((file_size + 1) * sizeof(char));
+    if (!buffer) {
+        fprintf(stderr, "Error: Memory allocation failed.\n");
+        fclose(file);
+        exit(EXIT_FAILURE); // Exit the program with failure status
+    }
+
+    size_t read_size = fread(buffer, sizeof(char), file_size, file);
+    if (read_size != file_size) {
+        fprintf(stderr, "Error: Could not read file '%s' completely.\n", file_path);
+        free(buffer);
+        fclose(file);
+        exit(EXIT_FAILURE); // Exit the program with failure status
+    }
+
+    buffer[file_size] = '\0';
+    fclose(file);
+    return buffer;
+}
+
+void free_linked_list(linked_lst *list){
+    if (!list) {
+        return;
+    }
+
+    node *current = list->head;
+    while (current) {
+        node *next = current->next; // Store the next node
+        free(current->name);       // Free the name string
+        free(current->value);      // Free the value string
+        free(current);             // Free the node itself
+        current = next;            // Move to the next node
+    }
+
+    free(list); // Free the linked list structure
+}

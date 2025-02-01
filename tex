@@ -32,7 +32,6 @@ void free_str(str *text);
 str *create_str();
 void reverse(char *text);
 void add_str_to_str(str *text, const char *input, int start_index);
-
 char *search_value(linked_lst *list, const char *name);
 void remove_node(linked_lst *lst, char *name);
 void append(linked_lst *lst, char *name, char *value);
@@ -45,6 +44,7 @@ char *read_arg(int *start, char *input, int flag);
 char* replace_placeholder(const char* s, const char* t);
 char *read_file_to_array(const char *file_path);
 void free_linked_list(linked_lst *list);
+
 
 
 int main(int argc, char **argv) {
@@ -554,7 +554,7 @@ char *read_arg(int *start, char *input, int flag) {
     int brace_counter = 0;
     int index = *start;
     int buf_index = 0;
-    int buffer_size = 1024;
+    int buffer_size = 1500;
     char *buffer = malloc(buffer_size + 1);
     int backslash_count = 0;
 
@@ -864,7 +864,6 @@ void add_str_to_str(str *text, const char *input, int start_index) {
     text->size = needed_size;
 }
 
-
 void reverse(char *text){
     if (text == NULL) {
         return; 
@@ -1001,6 +1000,7 @@ char *read_file_to_array(const char *file_path){
     fclose(file);
     return buffer;
 }
+
 
 void free_linked_list(linked_lst *list){
     if (!list) {

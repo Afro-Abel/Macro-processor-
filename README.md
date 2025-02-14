@@ -2,6 +2,12 @@
 
 ## Description
 
+# A TeX-like Macro Processor
+
+## Assignment Description
+
+TeX (or its later evolution LaTeX) is a program used often in academia to write technical papers and documents. Users define macros in text files that also contain the contents of the document, and TeX processes macros and string expands them based on their definitions.
+
 This project implements a state machine for processing macros in a text stream. The macro processor parses the input and handles various predefined commands like `def`, `undef`, `if`, `ifdef`, `expandafter`, and `include`. The goal is to transform and manipulate text based on user-defined macros and handle special characters through an escape mechanism.
 
 The state machine processes input line by line and can handle multiple macro commands, allowing macros to be defined, undefined, and expanded dynamically.
